@@ -77,7 +77,7 @@ func main() {
 	fmt.Println("(Insert/update/delete users from another client to see changes)")
 	fmt.Println("Press Ctrl+C to exit.")
 
-	sub, err := client.Subscribe(ctx, `db.table("users").changes()`)
+	sub, err := client.SubscribeRaw(ctx, `db.table("users").changes()`)
 	if err != nil {
 		log.Fatalf("Failed to subscribe: %v", err)
 	}
