@@ -205,6 +205,68 @@ func compileFilter(condition FilterCondition) string {
 	return strings.Join(parts, " && ")
 }
 
+// filterToStructured converts a FilterCondition to structured query format
+func filterToStructured(condition FilterCondition) map[string]interface{} {
+	result := make(map[string]interface{})
+
+	for field, value := range condition {
+		switch field {
+		case "$and":
+			if conds, ok := value.([]FilterCondition); ok {
+				structured := make([]map[string]interface{}, len(conds))
+				for i, c := range conds {
+					structured[i] = filterToStructured(c)
+				}
+				result["$and"] = structured
+			}
+		case "$or":
+			if conds, ok := value.([]FilterCondition); ok {
+				structured := make([]map[string]interface{}, len(conds))
+				for i, c := range conds {
+					structured[i] = filterToStructured(c)
+				}
+				result["$or"] = structured
+			}
+		case "$not":
+			if cond, ok := value.(FilterCondition); ok {
+				result["$not"] = filterToStructured(cond)
+			}
+		default:
+			switch op := value.(type) {
+			case eqOp:
+				result[field] = map[string]interface{}{"$eq": op.value}
+			case neOp:
+				result[field] = map[string]interface{}{"$ne": op.value}
+			case gtOp:
+				result[field] = map[string]interface{}{"$gt": op.value}
+			case gteOp:
+				result[field] = map[string]interface{}{"$gte": op.value}
+			case ltOp:
+				result[field] = map[string]interface{}{"$lt": op.value}
+			case lteOp:
+				result[field] = map[string]interface{}{"$lte": op.value}
+			case inOp:
+				result[field] = map[string]interface{}{"$in": op.values}
+			case notInOp:
+				result[field] = map[string]interface{}{"$nin": op.values}
+			case containsOp:
+				result[field] = map[string]interface{}{"$contains": op.value}
+			case startsWithOp:
+				result[field] = map[string]interface{}{"$startsWith": op.value}
+			case endsWithOp:
+				result[field] = map[string]interface{}{"$endsWith": op.value}
+			case existsOp:
+				result[field] = map[string]interface{}{"$exists": op.value}
+			default:
+				// Direct equality
+				result[field] = map[string]interface{}{"$eq": value}
+			}
+		}
+	}
+
+	return result
+}
+
 // SortDirection represents sort direction
 type SortDirection string
 
@@ -215,19 +277,35 @@ const (
 
 // SortSpec represents a sort specification
 type SortSpec struct {
-	Field     string
-	Direction SortDirection
+	Field     string        `json:"field"`
+	Direction SortDirection `json:"direction,omitempty"`
+}
+
+// ChangesSpec represents changes subscription options
+type ChangesSpec struct {
+	IncludeInitial bool `json:"includeInitial,omitempty"`
+}
+
+// StructuredQuery represents a structured query object
+type StructuredQuery struct {
+	Table   string                 `json:"table"`
+	Filter  map[string]interface{} `json:"filter,omitempty"`
+	Sort    []SortSpec             `json:"sort,omitempty"`
+	Limit   *int                   `json:"limit,omitempty"`
+	Skip    *int                   `json:"skip,omitempty"`
+	Changes *ChangesSpec           `json:"changes,omitempty"`
 }
 
 // QueryBuilder builds queries for SquirrelDB
 // Uses MongoDB-like naming: Find/Sort/Limit
 type QueryBuilder struct {
-	tableName  string
-	filterExpr string
-	sortSpecs  []SortSpec
-	limitValue *int
-	skipValue  *int
-	isChanges  bool
+	tableName       string
+	filterExpr      string
+	filterCondition FilterCondition
+	sortSpecs       []SortSpec
+	limitValue      *int
+	skipValue       *int
+	isChanges       bool
 }
 
 // Table creates a new query builder for a table
@@ -238,6 +316,7 @@ func Table(name string) *QueryBuilder {
 // Find adds a filter condition
 // Usage: Table("users").Find(Field("age").Gt(21))
 func (q *QueryBuilder) Find(condition FilterCondition) *QueryBuilder {
+	q.filterCondition = condition
 	q.filterExpr = compileFilter(condition)
 	return q
 }
@@ -267,7 +346,7 @@ func (q *QueryBuilder) Changes() *QueryBuilder {
 	return q
 }
 
-// Compile compiles the query to SquirrelDB JS syntax
+// Compile compiles the query to SquirrelDB JS syntax (legacy)
 func (q *QueryBuilder) Compile() string {
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf(`db.table("%s")`, q.tableName))
@@ -299,6 +378,37 @@ func (q *QueryBuilder) Compile() string {
 	}
 
 	return sb.String()
+}
+
+// CompileStructured compiles the query to a structured query object
+// (preferred, no JS evaluation on server)
+func (q *QueryBuilder) CompileStructured() StructuredQuery {
+	query := StructuredQuery{
+		Table: q.tableName,
+	}
+
+	if q.filterCondition != nil {
+		query.Filter = filterToStructured(q.filterCondition)
+	}
+
+	if len(q.sortSpecs) > 0 {
+		query.Sort = make([]SortSpec, len(q.sortSpecs))
+		for i, spec := range q.sortSpecs {
+			query.Sort[i] = SortSpec{
+				Field:     spec.Field,
+				Direction: spec.Direction,
+			}
+		}
+	}
+
+	query.Limit = q.limitValue
+	query.Skip = q.skipValue
+
+	if q.isChanges {
+		query.Changes = &ChangesSpec{IncludeInitial: false}
+	}
+
+	return query
 }
 
 // String returns the compiled query

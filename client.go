@@ -245,7 +245,36 @@ func (c *Client) SessionID() string {
 	return c.sessionID
 }
 
-// Query executes a query.
+// QueryStructured executes a structured query (no JS evaluation on server).
+func (c *Client) QueryStructured(ctx context.Context, q StructuredQuery) (json.RawMessage, error) {
+	msg := &ClientMessage{
+		Type:  "query",
+		ID:    c.nextID(),
+		Query: q,
+	}
+
+	resp, err := c.send(msg)
+	if err != nil {
+		return nil, err
+	}
+
+	if resp.Type == "error" {
+		return nil, errors.New(resp.Error)
+	}
+
+	return resp.Data, nil
+}
+
+// QueryStructuredTo executes a structured query and unmarshals the result into v.
+func (c *Client) QueryStructuredTo(ctx context.Context, q StructuredQuery, v interface{}) error {
+	data, err := c.QueryStructured(ctx, q)
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal(data, v)
+}
+
+// Query executes a query (legacy, prefer QueryStructured).
 func (c *Client) Query(ctx context.Context, q string) (json.RawMessage, error) {
 	msg := &ClientMessage{
 		Type:  "query",
@@ -265,7 +294,7 @@ func (c *Client) Query(ctx context.Context, q string) (json.RawMessage, error) {
 	return resp.Data, nil
 }
 
-// QueryTo executes a query and unmarshals the result into v.
+// QueryTo executes a query and unmarshals the result into v (legacy, prefer QueryStructuredTo).
 func (c *Client) QueryTo(ctx context.Context, q string, v interface{}) error {
 	data, err := c.Query(ctx, q)
 	if err != nil {
@@ -416,8 +445,73 @@ func (s *Subscription) Unsubscribe() error {
 	return err
 }
 
-// Subscribe subscribes to changes.
-func (c *Client) Subscribe(ctx context.Context, q string) (*Subscription, error) {
+// SubscriptionBuilder for fluent subscription API
+type SubscriptionBuilder struct {
+	client    *Client
+	tableName string
+	filter    FilterCondition
+}
+
+// Subscribe returns a SubscriptionBuilder for fluent change subscriptions.
+// Usage: client.Subscribe("users").Changes(ctx)
+func (c *Client) Subscribe(tableName string) *SubscriptionBuilder {
+	return &SubscriptionBuilder{
+		client:    c,
+		tableName: tableName,
+	}
+}
+
+// Find adds a filter condition to the subscription.
+func (sb *SubscriptionBuilder) Find(condition FilterCondition) *SubscriptionBuilder {
+	sb.filter = condition
+	return sb
+}
+
+// Changes subscribes to changes and returns the subscription.
+func (sb *SubscriptionBuilder) Changes(ctx context.Context) (*Subscription, error) {
+	q := StructuredQuery{
+		Table:   sb.tableName,
+		Changes: &ChangesSpec{IncludeInitial: false},
+	}
+	if sb.filter != nil {
+		q.Filter = filterToStructured(sb.filter)
+	}
+	return sb.client.SubscribeStructured(ctx, q)
+}
+
+// SubscribeStructured subscribes to changes with a structured query.
+func (c *Client) SubscribeStructured(ctx context.Context, q StructuredQuery) (*Subscription, error) {
+	id := c.nextID()
+	msg := &ClientMessage{
+		Type:  "subscribe",
+		ID:    id,
+		Query: q,
+	}
+
+	resp, err := c.send(msg)
+	if err != nil {
+		return nil, err
+	}
+
+	if resp.Type == "error" {
+		return nil, errors.New(resp.Error)
+	}
+
+	changes := make(chan *ChangeEvent, 100)
+
+	c.subMu.Lock()
+	c.subscriptions[id] = changes
+	c.subMu.Unlock()
+
+	return &Subscription{
+		ID:      id,
+		client:  c,
+		changes: changes,
+	}, nil
+}
+
+// SubscribeRaw subscribes to changes with a raw query string (legacy).
+func (c *Client) SubscribeRaw(ctx context.Context, q string) (*Subscription, error) {
 	id := c.nextID()
 	msg := &ClientMessage{
 		Type:  "subscribe",

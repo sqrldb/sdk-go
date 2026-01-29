@@ -24,10 +24,11 @@ type ChangeEvent struct {
 }
 
 // ClientMessage is a message sent from client to server.
+// Query can be either a string (legacy JS query) or a StructuredQuery object.
 type ClientMessage struct {
 	Type       string      `json:"type" msgpack:"type"`
 	ID         string      `json:"id" msgpack:"id"`
-	Query      string      `json:"query,omitempty" msgpack:"query,omitempty"`
+	Query      interface{} `json:"query,omitempty" msgpack:"query,omitempty"`
 	Collection string      `json:"collection,omitempty" msgpack:"collection,omitempty"`
 	DocumentID string      `json:"document_id,omitempty" msgpack:"document_id,omitempty"`
 	Data       interface{} `json:"data,omitempty" msgpack:"data,omitempty"`
