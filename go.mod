@@ -1,7 +1,7 @@
-module github.com/squirreldb/squirreldb-go
+module github.com/squirreldb/squirreldb-sdk-go
 
 go 1.21
 
-require github.com/vmihailenco/msgpack/v5 v5.4.1
+require github.com/gorilla/websocket v1.5.1
 
-require github.com/vmihailenco/tagparser/v2 v2.0.0 // indirect
+require golang.org/x/net v0.17.0 // indirect

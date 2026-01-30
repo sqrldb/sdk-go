@@ -10,7 +10,7 @@ import (
 	"os/signal"
 	"syscall"
 
-	squirreldb "github.com/squirreldb/squirreldb-go"
+	squirreldb "github.com/squirreldb/squirreldb-sdk-go"
 )
 
 func main() {
@@ -26,7 +26,7 @@ func main() {
 	}
 	defer client.Close()
 
-	fmt.Printf("Connected! Session ID: %s\n", client.SessionID())
+	fmt.Println("Connected!")
 
 	// Ping the server
 	if err := client.Ping(ctx); err != nil {
@@ -53,16 +53,16 @@ func main() {
 	fmt.Printf("Inserted document: %+v\n", doc)
 
 	// Query documents
-	data, err := client.Query(ctx, `db.table("users").filter(u => u.active).run()`)
+	docs, err := client.Query(ctx, `db.table("users").filter(u => u.active).run()`)
 	if err != nil {
 		log.Fatalf("Query failed: %v", err)
 	}
 	var prettyJSON []byte
-	prettyJSON, _ = json.MarshalIndent(json.RawMessage(data), "", "  ")
+	prettyJSON, _ = json.MarshalIndent(docs, "", "  ")
 	fmt.Printf("Active users: %s\n", prettyJSON)
 
 	// Update the document
-	updated, err := client.Update(ctx, "users", doc.ID, map[string]interface{}{
+	updated, err := client.Update(ctx, "users", doc.Id, map[string]interface{}{
 		"name":   "Alice Updated",
 		"email":  "alice.updated@example.com",
 		"active": true,
@@ -77,7 +77,18 @@ func main() {
 	fmt.Println("(Insert/update/delete users from another client to see changes)")
 	fmt.Println("Press Ctrl+C to exit.")
 
-	sub, err := client.SubscribeRaw(ctx, `db.table("users").changes()`)
+	subID, err := client.Subscribe(ctx, `db.table("users").changes()`, func(change squirreldb.ChangeEvent) {
+		switch change.Type {
+		case squirreldb.ChangeTypeInitial:
+			fmt.Printf("Initial: %+v\n", change.Document)
+		case squirreldb.ChangeTypeInsert:
+			fmt.Printf("Insert: %+v\n", change.New)
+		case squirreldb.ChangeTypeUpdate:
+			fmt.Printf("Update: %+v -> %+v\n", change.Old, change.New)
+		case squirreldb.ChangeTypeDelete:
+			fmt.Printf("Delete: %+v\n", change.Old)
+		}
+	})
 	if err != nil {
 		log.Fatalf("Failed to subscribe: %v", err)
 	}
@@ -86,25 +97,8 @@ func main() {
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
-	go func() {
-		<-sigCh
-		fmt.Println("\nUnsubscribing...")
-		sub.Unsubscribe()
-		client.Close()
-		os.Exit(0)
-	}()
-
-	// Process changes
-	for change := range sub.Changes() {
-		switch change.Type {
-		case "initial":
-			fmt.Printf("Initial: %+v\n", change.Document)
-		case "insert":
-			fmt.Printf("Insert: %+v\n", change.New)
-		case "update":
-			fmt.Printf("Update: %s -> %+v\n", change.Old, change.New)
-		case "delete":
-			fmt.Printf("Delete: %s\n", change.Old)
-		}
-	}
+	<-sigCh
+	fmt.Println("\nUnsubscribing...")
+	client.Unsubscribe(ctx, subID)
+	client.Close()
 }
